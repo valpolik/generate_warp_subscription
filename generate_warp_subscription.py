@@ -5,7 +5,7 @@ API_BASE = "https://awgconfig.com/api/warp"
 FALLBACK_API_BASE = "https://yota-warp-self.vercel.app/api/generate"
 MODE = "awg31"
 COUNT_PER_REQUEST = 3
-TARGET_TOTAL = 15
+TARGET_TOTAL = 20
 
 LINKS_FILE = "warp-awg-links.txt"
 ZIP_FILE = "warp-awg-configs.zip"
@@ -14,7 +14,7 @@ CONTAINER_FILE = "warp-awg-container.json"
 # --- Логика устойчивости ---
 REQUEST_DELAY = 6              # пауза между успешными запросами к одному API
 RETRY_DELAY = 5                # пауза после обычной неудачи (не 429)
-RATE_LIMIT_BASE_DELAY = 15     # базовая пауза при 429 (растёт экспоненциально)
+RATE_LIMIT_BASE_DELAY = 10     # базовая пауза при 429 (растёт экспоненциально)
 MAX_CONSECUTIVE_FAILURES = 3   # сколько неудач подряд до переключения API
 MAX_ATTEMPTS = 40              # предохранитель от бесконечного цикла
 
