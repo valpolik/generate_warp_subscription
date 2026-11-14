@@ -11,8 +11,8 @@ ZIP_FILE = "warp-awg-configs.zip"
 CONTAINER_FILE = "warp-awg-container.json"
 
 # --- Логика устойчивости ---
-REQUEST_DELAY = 2            # пауза между успешными запросами к одному API
-RETRY_DELAY = 5              # пауза перед повтором после неудачи
+REQUEST_DELAY = 5            # пауза между успешными запросами к одному API
+RETRY_DELAY = 10              # пауза перед повтором после неудачи
 MAX_CONSECUTIVE_FAILURES = 3 # сколько неудач ПОДРЯД допустимо, прежде чем сменить API
 MAX_ATTEMPTS = 30            # общий предохранитель от бесконечного цикла
 
