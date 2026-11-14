@@ -9,7 +9,7 @@ TARGET_TOTAL = 15
 LINKS_FILE = "warp-awg-links.txt"
 ZIP_FILE = "warp-awg-configs.zip"
 CONTAINER_FILE = "warp-awg-container.json"
-REQUEST_DELAY = 5
+REQUEST_DELAY = 10
 
 # Точный шаблон приватного ключа WireGuard (44 символа base64, '=' в конце)
 WG_PRIVKEY_RE = re.compile(r"^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$")
