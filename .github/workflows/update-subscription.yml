@@ -1,19 +1,25 @@
 name: Update WARP AmneziaWG Subscription
+
 on:
   schedule:
-    - cron: '0 */6 * * *'
-  workflow_dispatch:
+    # Каждые 5 минут, но со сдвигом на 2-ю минуту, чтобы избежать пиковой нагрузки в начале часа
+    - cron: '2-59/5 * * * *'
+  workflow_dispatch: # Оставляем возможность ручного запуска для отладки
 
 permissions:
-  contents: write
+  contents: write # Обязательно для коммита файлов обратно в репозиторий
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Ограничиваем время выполнения, чтобы «зависший» запуск не съел минуты (актуально для приватных репозиториев)
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
@@ -25,9 +31,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add warp-awg-links.txt warp-awg-configs.zip warp-awg-container.json
+          # Проверяем, есть ли изменения, чтобы не создавать пустые коммиты
           if git diff --staged --quiet; then
             echo "Нет изменений — пропускаем коммит."
           else
+            # Коммит с меткой [skip ci] предотвращает повторный запуск этого же workflow от пуша
             git commit -m "chore: update WARP AmneziaWG subscription [skip ci]"
             git push
           fi
