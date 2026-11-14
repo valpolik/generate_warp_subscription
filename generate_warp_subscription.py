@@ -63,7 +63,7 @@ CPS_QUERY_KEYS = [
 
 # ==================== РАЗНООБРАЗИЕ ПАРАМЕТРОВ ====================
 MODES = ["legacy", "awg2", "awg3", "awg31"]
-ENDPOINT_MODES = ["hostname", "lab"]
+ENDPOINT_MODES = ["lab","lab"]
 WARP_PORTS = [2408, 500, 4500, 1701, 880, 8854]
 CPS_MODES = ["auto", "static", "sip", "stun", "quic", "dns", "dtls"]
 KEEPALIVE_RANGES = ["25", "25-35", "15-25", "30-40", "20-30"]
