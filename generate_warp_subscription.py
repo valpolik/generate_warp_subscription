@@ -9,11 +9,14 @@ TARGET_TOTAL = 15
 LINKS_FILE = "warp-awg-links.txt"
 ZIP_FILE = "warp-awg-configs.zip"
 CONTAINER_FILE = "warp-awg-container.json"
-REQUEST_DELAY = 10
 
-# Точный шаблон приватного ключа WireGuard (44 символа base64, '=' в конце)
+# --- Логика устойчивости ---
+REQUEST_DELAY = 2            # пауза между успешными запросами к одному API
+RETRY_DELAY = 5              # пауза перед повтором после неудачи
+MAX_CONSECUTIVE_FAILURES = 3 # сколько неудач ПОДРЯД допустимо, прежде чем сменить API
+MAX_ATTEMPTS = 30            # общий предохранитель от бесконечного цикла
+
 WG_PRIVKEY_RE = re.compile(r"^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$")
-
 ALLOWED_CPS_TAGS = {"b", "r", "rc", "rd", "dz", "t", "d", "ds"}
 CPS_QUERY_KEYS = [
     "i1", "i2", "i3", "i4", "i5", "jc", "jmin", "jmax",
@@ -67,13 +70,9 @@ def iface_peer_to_awg_link(iface, peer):
     endpoint = peer.get("endpoint")
     if not priv_raw or not endpoint:
         return None
-
-    # Очистка ключа от пробелов, кавычек и прочего мусора
     priv = priv_raw.strip().strip('"').strip("'")
-    # Жёсткая проверка: ровно 44 символа base64 с '=' в конце
     if not WG_PRIVKEY_RE.fullmatch(priv):
         return None
-
     if endpoint.startswith("["):
         host, _, port = endpoint.partition("]:")
         host = host.lstrip("[")
@@ -88,7 +87,6 @@ def iface_peer_to_awg_link(iface, peer):
         query["public_key"] = pub
     if iface.get("address"):
         query["address"] = iface["address"].replace(" ", "")
-
     for k in CPS_QUERY_KEYS:
         if k in iface:
             query[k] = sanitize_cps_tag(iface[k]) if k.startswith("i") else iface[k]
@@ -116,36 +114,81 @@ def extract_conf_texts(resp):
         texts.append(resp["config"])
     return texts
 
+def request_api(base):
+    """Один запрос к API. Возвращает список .conf или None при неудаче."""
+    params = {"mode": MODE, "count": str(COUNT_PER_REQUEST)}
+    if "awgconfig.com" in base:
+        params["endpointMode"] = "lab"
+    url = f"{base}?{urllib.parse.urlencode(params)}"
+    try:
+        with urllib.request.urlopen(url, timeout=60) as r:
+            data = json.loads(r.read().decode())
+    except Exception as e:
+        print(f"  [!] Сетевая ошибка: {e}")
+        return None
+    if not data.get("success", True):
+        print(f"  [!] API вернул success=false")
+        return None
+    texts = extract_conf_texts(data)
+    if not texts:
+        print("  [!] API не вернул валидных .conf")
+        return None
+    return texts
+
+def fetch_from_api(base):
+    """
+    Пытается собрать TARGET_TOTAL конфигов с одного API.
+    Возвращает (собрано_текстов, причина_остановки).
+    Причина: 'done' — набрали цель, 'exhausted' — упёрлись в лимит неудач.
+    """
+    collected = []
+    consecutive_failures = 0
+    attempts = 0
+    while len(collected) < TARGET_TOTAL and attempts < MAX_ATTEMPTS:
+        attempts += 1
+        texts = request_api(base)
+        if texts is None:
+            consecutive_failures += 1
+            print(f"  [~] Неудача {consecutive_failures}/{MAX_CONSECUTIVE_FAILURES} подряд")
+            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                return collected, "exhausted"
+            time.sleep(RETRY_DELAY)
+            continue
+
+        # Успех — сбрасываем счётчик
+        consecutive_failures = 0
+        collected.extend(texts)
+        print(f"  [+] +{len(texts)} (всего {len(collected)})")
+        if len(collected) < TARGET_TOTAL:
+            time.sleep(REQUEST_DELAY)
+    return collected, "done"
+
 def fetch_all_conf_texts():
-    all_texts = []
+    """
+    Основной API пробуется до MAX_CONSECUTIVE_FAILURES подряд.
+    Если он «исчерпан» — переключаемся на резервный.
+    Если основной справился — резервный не трогаем.
+    """
     for base in (API_BASE, FALLBACK_API_BASE):
         print(f"[*] API: {base}")
-        collected = []
-        for _ in range(10):
-            if len(collected) >= TARGET_TOTAL:
-                break
-            params = {"mode": MODE, "count": str(COUNT_PER_REQUEST)}
-            if "awgconfig.com" in base:
-                params["endpointMode"] = "lab"
-            url = f"{base}?{urllib.parse.urlencode(params)}"
-            try:
-                with urllib.request.urlopen(url, timeout=60) as r:
-                    data = json.loads(r.read().decode())
-            except Exception as e:
-                print(f"  [!] Ошибка: {e}")
-                break
-            texts = extract_conf_texts(data)
-            if not texts:
-                break
-            collected.extend(texts)
-            print(f"  [+] +{len(texts)} (всего {len(collected)})")
-            time.sleep(REQUEST_DELAY)
-        if collected:
-            all_texts.extend(collected)
-            print(f"[✓] {base}: {len(collected)}")
-        if len(all_texts) >= TARGET_TOTAL:
-            break
-    return all_texts[:TARGET_TOTAL]
+        texts, reason = fetch_from_api(base)
+        if reason == "done" and texts:
+            print(f"[✓] {base} собрал {len(texts)} конфигов — резервный не нужен")
+            return texts[:TARGET_TOTAL]
+        if reason == "exhausted" and texts:
+            print(f"[~] {base} дал {len(texts)} конфигов, но исчерпал лимит неудач — попробуем резервный")
+            # Пробуем добрать с резервного
+            continue
+        print(f"[!] {base} не дал результатов — переключаемся")
+
+    # Если дошли сюда — основной не справился, пробуем резервный отдельно
+    print(f"[*] API: {FALLBACK_API_BASE}")
+    texts, _ = fetch_from_api(FALLBACK_API_BASE)
+    if texts:
+        print(f"[✓] Резервный API дал {len(texts)} конфигов")
+        return texts[:TARGET_TOTAL]
+
+    raise SystemExit("Ни один API не дал конфигов.")
 
 def build_json_container(texts):
     servers = []
@@ -163,26 +206,17 @@ def main():
         raise SystemExit("Нет конфигов.")
     print(f"[*] Всего .conf: {len(texts)}")
 
-    links, skipped = [], []
+    links, skipped = [], 0
     for t in texts:
         iface, peer = parse_conf(t)
         link = iface_peer_to_awg_link(iface, peer)
         if link:
             links.append(link)
         else:
-            # Логируем отброшенную строку, чтобы вы могли убедиться, что фильтр работает
-            priv_preview = (iface.get("privatekey") or "")[:20]
-            skipped.append(f"priv='{priv_preview}...' endpoint={peer.get('endpoint')}")
-
+            skipped += 1
     with open(LINKS_FILE, "w", encoding="utf-8") as f:
         f.write("\n".join(links))
-    print(f"[✓] {len(links)} валидных ссылок в {LINKS_FILE}")
-    if skipped:
-        print(f"[!] Отброшено {len(skipped)} строк с невалидным ключом или endpoint:")
-        for s in skipped[:5]:  # показываем первые 5 для примера
-            print(f"    - {s}")
-        if len(skipped) > 5:
-            print(f"    ... и ещё {len(skipped) - 5}")
+    print(f"[✓] {len(links)} ссылок в {LINKS_FILE} (пропущено: {skipped})")
 
     with zipfile.ZipFile(ZIP_FILE, "w", zipfile.ZIP_DEFLATED) as z:
         for i, t in enumerate(texts, 1):
