@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
-import base64, json, re, time, urllib.parse, urllib.request, zipfile
+import base64, json, re, time, urllib.error, urllib.parse, urllib.request, zipfile
 
 API_BASE = "https://awgconfig.com/api/warp"
 FALLBACK_API_BASE = "https://yota-warp-self.vercel.app/api/generate"
 MODE = "awg31"
 COUNT_PER_REQUEST = 3
 TARGET_TOTAL = 15
+
 LINKS_FILE = "warp-awg-links.txt"
 ZIP_FILE = "warp-awg-configs.zip"
 CONTAINER_FILE = "warp-awg-container.json"
 
 # --- Логика устойчивости ---
-REQUEST_DELAY = 5            # пауза между успешными запросами к одному API
-RETRY_DELAY = 10              # пауза перед повтором после неудачи
-MAX_CONSECUTIVE_FAILURES = 3 # сколько неудач ПОДРЯД допустимо, прежде чем сменить API
-MAX_ATTEMPTS = 30            # общий предохранитель от бесконечного цикла
+REQUEST_DELAY = 6              # пауза между успешными запросами к одному API
+RETRY_DELAY = 5                # пауза после обычной неудачи (не 429)
+RATE_LIMIT_BASE_DELAY = 15     # базовая пауза при 429 (растёт экспоненциально)
+MAX_CONSECUTIVE_FAILURES = 3   # сколько неудач подряд до переключения API
+MAX_ATTEMPTS = 40              # предохранитель от бесконечного цикла
 
 WG_PRIVKEY_RE = re.compile(r"^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$")
 ALLOWED_CPS_TAGS = {"b", "r", "rc", "rd", "dz", "t", "d", "ds"}
@@ -114,8 +116,12 @@ def extract_conf_texts(resp):
         texts.append(resp["config"])
     return texts
 
-def request_api(base):
-    """Один запрос к API. Возвращает список .conf или None при неудаче."""
+def request_api(base, rate_limit_hits=0):
+    """
+    Один запрос к API.
+    Возвращает (texts_or_None, error_type).
+    error_type ∈ {None, 'rate_limit', 'server', 'network', 'empty'}.
+    """
     params = {"mode": MODE, "count": str(COUNT_PER_REQUEST)}
     if "awgconfig.com" in base:
         params["endpointMode"] = "lab"
@@ -123,40 +129,57 @@ def request_api(base):
     try:
         with urllib.request.urlopen(url, timeout=60) as r:
             data = json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        if e.code == 429:
+            wait = min(RATE_LIMIT_BASE_DELAY * (2 ** rate_limit_hits), 120)
+            print(f"  [!] Rate limit 429. Ждём {wait}с (попытка {rate_limit_hits + 1})")
+            time.sleep(wait)
+            return None, "rate_limit"
+        if e.code >= 500:
+            print(f"  [!] Серверная ошибка {e.code}")
+            return None, "server"
+        print(f"  [!] HTTP {e.code}")
+        return None, "network"
     except Exception as e:
         print(f"  [!] Сетевая ошибка: {e}")
-        return None
+        return None, "network"
+
     if not data.get("success", True):
-        print(f"  [!] API вернул success=false")
-        return None
+        print("  [!] API вернул success=false")
+        return None, "empty"
     texts = extract_conf_texts(data)
     if not texts:
         print("  [!] API не вернул валидных .conf")
-        return None
-    return texts
+        return None, "empty"
+    return texts, None
 
 def fetch_from_api(base):
     """
     Пытается собрать TARGET_TOTAL конфигов с одного API.
-    Возвращает (собрано_текстов, причина_остановки).
-    Причина: 'done' — набрали цель, 'exhausted' — упёрлись в лимит неудач.
+    Возвращает (собрано_текстов, причина_остановки):
+      'done'      — набрали цель,
+      'exhausted' — упёрлись в лимит неудач.
     """
     collected = []
     consecutive_failures = 0
+    rate_limit_hits = 0
     attempts = 0
     while len(collected) < TARGET_TOTAL and attempts < MAX_ATTEMPTS:
         attempts += 1
-        texts = request_api(base)
+        texts, err = request_api(base, rate_limit_hits)
         if texts is None:
             consecutive_failures += 1
+            if err == "rate_limit":
+                rate_limit_hits += 1
             print(f"  [~] Неудача {consecutive_failures}/{MAX_CONSECUTIVE_FAILURES} подряд")
             if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                 return collected, "exhausted"
-            time.sleep(RETRY_DELAY)
+            if err != "rate_limit":
+                time.sleep(RETRY_DELAY)
             continue
-
-        # Успех — сбрасываем счётчик
+        # Успех
         consecutive_failures = 0
+        rate_limit_hits = 0
         collected.extend(texts)
         print(f"  [+] +{len(texts)} (всего {len(collected)})")
         if len(collected) < TARGET_TOTAL:
@@ -165,30 +188,41 @@ def fetch_from_api(base):
 
 def fetch_all_conf_texts():
     """
-    Основной API пробуется до MAX_CONSECUTIVE_FAILURES подряд.
-    Если он «исчерпан» — переключаемся на резервный.
-    Если основной справился — резервный не трогаем.
+    Опрашивает API по порядку, накапливая результаты.
+    Возвращает дедуплицированный список, даже если оба API «исчерпаны».
     """
+    all_texts = []
     for base in (API_BASE, FALLBACK_API_BASE):
         print(f"[*] API: {base}")
         texts, reason = fetch_from_api(base)
-        if reason == "done" and texts:
-            print(f"[✓] {base} собрал {len(texts)} конфигов — резервный не нужен")
-            return texts[:TARGET_TOTAL]
+        if texts:
+            all_texts.extend(texts)
+            print(f"[+] {base}: {len(texts)} конфигов (накоплено: {len(all_texts)})")
+        else:
+            print(f"[!] {base}: 0 конфигов")
+        if len(all_texts) >= TARGET_TOTAL:
+            print(f"[✓] Набрали {len(all_texts)} — останавливаемся")
+            break
         if reason == "exhausted" and texts:
-            print(f"[~] {base} дал {len(texts)} конфигов, но исчерпал лимит неудач — попробуем резервный")
-            # Пробуем добрать с резервного
+            print(f"[~] {base} исчерпан — переключаемся на следующий API")
+        elif reason == "done" and texts:
+            print(f"[~] {base} отдал всё что мог — добираем с резервного")
+
+    if not all_texts:
+        raise SystemExit("Ни один API не дал конфигов.")
+
+    # Дедупликация по приватному ключу (уникален для каждого конфига)
+    seen_keys = set()
+    unique = []
+    for t in all_texts:
+        iface, _ = parse_conf(t)
+        key = iface.get("privatekey", "")
+        if key and key in seen_keys:
             continue
-        print(f"[!] {base} не дал результатов — переключаемся")
-
-    # Если дошли сюда — основной не справился, пробуем резервный отдельно
-    print(f"[*] API: {FALLBACK_API_BASE}")
-    texts, _ = fetch_from_api(FALLBACK_API_BASE)
-    if texts:
-        print(f"[✓] Резервный API дал {len(texts)} конфигов")
-        return texts[:TARGET_TOTAL]
-
-    raise SystemExit("Ни один API не дал конфигов.")
+        seen_keys.add(key)
+        unique.append(t)
+    print(f"[*] После дедупликации: {len(unique)} из {len(all_texts)}")
+    return unique[:TARGET_TOTAL]
 
 def build_json_container(texts):
     servers = []
@@ -202,9 +236,7 @@ def build_json_container(texts):
 
 def main():
     texts = fetch_all_conf_texts()
-    if not texts:
-        raise SystemExit("Нет конфигов.")
-    print(f"[*] Всего .conf: {len(texts)}")
+    print(f"[*] Итого .conf для записи: {len(texts)}")
 
     links, skipped = [], 0
     for t in texts:
