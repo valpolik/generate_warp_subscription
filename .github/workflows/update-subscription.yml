@@ -1,0 +1,35 @@
+name: Update WARP AmneziaWG Subscription
+on:
+  schedule:
+    - cron: '0 */6 * * *'   # каждые 6 часов
+  workflow_dispatch:        # позволяет запускать вручную
+
+permissions:
+  contents: write           # нужно для коммита
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Generate subscription files
+        run: python generate_warp_subscription.py
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add warp-awg-links.txt warp-awg-configs.zip warp-awg-container.json
+          if git diff --staged --quiet; then
+            echo "Нет изменений — пропускаем коммит."
+          else
+            git commit -m "chore: update WARP AmneziaWG subscription [skip ci]"
+            git push
+          fi
