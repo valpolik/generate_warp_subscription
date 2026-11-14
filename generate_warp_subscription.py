@@ -25,7 +25,7 @@ TARGET_TOTAL = 15
 LINKS_FILE = "warp-awg-links.txt"
 ZIP_FILE = "warp-awg-configs.zip"
 CONTAINER_FILE = "warp-awg-container.json"
-REQUEST_DELAY = 2
+REQUEST_DELAY = 5
 
 # Валидный приватный ключ WireGuard/AmneziaWG:
 # 44 символа base64, последний символ — один из "AEIMQUYcgkosw480="
