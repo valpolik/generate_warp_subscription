@@ -27,7 +27,7 @@ import zipfile
 API_BASE = "https://awgconfig.com/api/warp"
 FALLBACK_API_BASE = "https://yota-warp-self.vercel.app/api/generate"
 
-TARGET_TOTAL = 30            # итоговое число конфигов (с запасом на дубли)
+TARGET_TOTAL = 50            # итоговое число конфигов (с запасом на дубли)
 COUNT_PER_REQUEST = 3        # максимум для awgconfig.com
 REQUEST_DELAY = 6            # пауза между успешными запросами
 RETRY_DELAY = 5              # пауза после обычной неудачи (не 429)
