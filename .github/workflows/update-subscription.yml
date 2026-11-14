@@ -1,21 +1,19 @@
 name: Update WARP AmneziaWG Subscription
 on:
   schedule:
-    - cron: '0 */6 * * *'   # каждые 6 часов
-  workflow_dispatch:        # позволяет запускать вручную
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
 
 permissions:
-  contents: write           # нужно для коммита
+  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
